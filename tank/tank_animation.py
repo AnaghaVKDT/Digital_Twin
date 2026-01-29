@@ -31,8 +31,23 @@ TANK_AREA = math.pi * TANK_RADIUS ** 2
 FULL_VOLUME = TANK_AREA * TANK_HEIGHT
 
 # =============================
-# TANK + WATER + PIPES
+# TANK + WATER + PIPES + FLOOR
 # =============================
+# Floor (ground plane for spilling water) - WITH COLLISION MODIFIER FOR SOLIDITY
+bpy.ops.mesh.primitive_plane_add(size=10, location=(0, 0, 0))
+floor = bpy.context.active_object
+floor.name = "Floor"
+floor_mat = bpy.data.materials.new("FloorMaterial")
+floor_mat.use_nodes = True
+floor_nodes = floor_mat.node_tree.nodes
+floor_bsdf = floor_nodes.get("Principled BSDF")
+floor_bsdf.inputs["Base Color"].default_value = (0.5, 0.5, 0.5, 1)  # Gray floor
+floor.data.materials.append(floor_mat)
+
+# ADD COLLISION MODIFIER TO MAKE FLOOR SOLID FOR PARTICLES
+floor_collision = floor.modifiers.new(name="Collision", type='COLLISION')
+floor_collision.settings.damping = 1.0  # High damping to absorb bounce
+
 # Tank (hollow)
 bpy.ops.mesh.primitive_cylinder_add(radius=TANK_RADIUS, depth=TANK_HEIGHT, location=(0, 0, TANK_HEIGHT / 2))
 tank_outer = bpy.context.active_object
@@ -49,6 +64,10 @@ bpy.data.objects.remove(tank_inner, do_unlink=True)
 tank_outer.name = "Tank"
 tank_outer.display_type = 'WIRE'
 
+# ADD COLLISION TO TANK WALLS TO PREVENT BOUNCING OFF THEM
+tank_collision = tank_outer.modifiers.new(name="Collision", type='COLLISION')
+tank_collision.settings.damping = 1.0  # Absorb bounce
+
 # Water
 bpy.ops.mesh.primitive_cylinder_add(radius=(TANK_RADIUS - TANK_WALL_THICKNESS) * 0.97, depth=TANK_HEIGHT, location=(0, 0, TANK_HEIGHT / 2))
 water = bpy.context.active_object
@@ -64,6 +83,10 @@ bsdf.inputs["Roughness"].default_value = 0.1
 bsdf.inputs["Alpha"].default_value = 0.5
 mat.blend_method = 'BLEND'
 water.data.materials.append(mat)
+
+# ADD COLLISION MODIFIER TO WATER WITH HIGH DAMPING (TO ABSORB BOUNCE ON WATER SURFACE)
+water_collision = water.modifiers.new(name="Collision", type='COLLISION')
+water_collision.settings.damping = 1.0  # Absorb bounce on water surface
 
 # Hollow pipes - **OUTLET NOW AT BOTTOM** - ADJUSTED INLET POSITION FOR BETTER FLOW
 pipes = {}
@@ -92,25 +115,25 @@ inlet_pipe = pipes["InletPipe"]
 x_inlet = -0.75
 emission_loc = (x_inlet + PIPE_LENGTH / 2, 0, TANK_HEIGHT - 0.5)  # End of inlet pipe, now at x=0
 bpy.ops.mesh.primitive_plane_add(size=0.05, location=emission_loc, rotation=(0, math.radians(90), 0))  # Rotate to match pipe direction
-emitter = bpy.context.active_object
-emitter.name = "InletEmitter"
-emitter.hide_render = True  # Hide the emitter plane in renders
+emitter_inlet = bpy.context.active_object
+emitter_inlet.name = "InletEmitter"
+emitter_inlet.hide_render = True  # Hide the emitter plane in renders
 
-bpy.context.view_layer.objects.active = emitter
+bpy.context.view_layer.objects.active = emitter_inlet
 bpy.ops.object.particle_system_add()
-psys = emitter.particle_systems[0]
-psys.settings.name = "WaterFlow"
-settings = psys.settings
-settings.emit_from = 'FACE'
-settings.use_emit_random = False
-settings.normal_factor = 1.0
-settings.particle_size = 0.05  # Increased for better visibility
-settings.render_type = 'OBJECT'
-settings.lifetime = 200  # Long enough to reach tank bottom
-settings.count = 2000  # Increased for denser flow
-settings.frame_start = 1
-settings.frame_end = TOTAL_FRAMES  # Will be adjusted later to stop at fill end
-settings.effector_weights.gravity = 1.0  # Particles fall down
+psys_inlet = emitter_inlet.particle_systems[0]
+psys_inlet.settings.name = "WaterFlowInlet"
+settings_inlet = psys_inlet.settings
+settings_inlet.emit_from = 'FACE'
+settings_inlet.use_emit_random = False
+settings_inlet.normal_factor = 1.0
+settings_inlet.particle_size = 0.05  # Increased for better visibility
+settings_inlet.render_type = 'OBJECT'
+settings_inlet.lifetime = 200  # Long enough to reach tank bottom
+settings_inlet.count = 2000  # Increased for denser flow
+settings_inlet.frame_start = 1
+settings_inlet.frame_end = TOTAL_FRAMES  # Will be adjusted later to stop at fill end
+settings_inlet.effector_weights.gravity = 1.0  # Particles fall down
 
 # Create small sphere for particle (water drop) - MADE LARGER FOR VISIBILITY
 bpy.ops.mesh.primitive_uv_sphere_add(radius=0.05, location=(0, 0, 0))  # Increased radius for easier selection/visibility
@@ -124,7 +147,36 @@ drop_bsdf.inputs["Base Color"].default_value = (0.0, 0.4, 0.9, 1)
 drop_bsdf.inputs["Alpha"].default_value = 0.8
 drop_mat.blend_method = 'BLEND'
 particle_obj.data.materials.append(drop_mat)
-settings.instance_object = particle_obj
+settings_inlet.instance_object = particle_obj
+
+# =============================
+# ADD WATER FLOW FROM OUTLET PIPE (FOR DRAINING/SPILLING)
+# =============================
+# Create a small plane emitter at the end of the outlet pipe (downward for spilling)
+outlet_pipe = pipes["OutletPipe"]
+x_outlet = 1.2
+emission_loc_outlet = (x_outlet + PIPE_LENGTH / 2, 0, 0.1)  # End of outlet pipe, at bottom
+bpy.ops.mesh.primitive_plane_add(size=0.05, location=emission_loc_outlet, rotation=(math.radians(-90), 0, 0))  # Rotate downward
+emitter_outlet = bpy.context.active_object
+emitter_outlet.name = "OutletEmitter"
+emitter_outlet.hide_render = True  # Hide the emitter plane in renders
+
+bpy.context.view_layer.objects.active = emitter_outlet
+bpy.ops.object.particle_system_add()
+psys_outlet = emitter_outlet.particle_systems[0]
+psys_outlet.settings.name = "WaterFlowOutlet"
+settings_outlet = psys_outlet.settings
+settings_outlet.emit_from = 'FACE'
+settings_outlet.use_emit_random = False
+settings_outlet.normal_factor = 1.0
+settings_outlet.particle_size = 0.05  # Same as inlet for consistency
+settings_outlet.render_type = 'OBJECT'
+settings_outlet.lifetime = 100  # Shorter lifetime for spilling on floor
+settings_outlet.count = 2000  # Denser flow for spilling
+settings_outlet.frame_start = TOTAL_FRAMES  # Will be adjusted to start at drain begin
+settings_outlet.frame_end = TOTAL_FRAMES
+settings_outlet.effector_weights.gravity = 1.0  # Particles fall down to floor
+settings_outlet.instance_object = particle_obj  # Reuse the same WaterDrop object
 
 # =============================
 # ANIMATION: FILL → FULL → **COMPLETELY EMPTY** (UPDATED OUTLET LOGIC)
@@ -132,6 +184,8 @@ settings.instance_object = particle_obj
 current_volume = 0.0
 tank_filled = False
 tank_filled_frame = None  # Track when filling stops
+draining_started = False
+draining_start_frame = None  # Track when draining starts
 
 for frame in range(1, TOTAL_FRAMES + 1):
     time_sec = frame / FPS
@@ -146,6 +200,11 @@ for frame in range(1, TOTAL_FRAMES + 1):
         tank_filled = True
         if tank_filled_frame is None:
             tank_filled_frame = frame  # Record the frame when filling stops
+    
+    # **START DRAINING WHEN FULL**
+    if tank_filled and not draining_started:
+        draining_started = True
+        draining_start_frame = frame  # Record the frame when draining starts
     
     if not tank_filled:
         # FILLING PHASE
@@ -171,9 +230,11 @@ for frame in range(1, TOTAL_FRAMES + 1):
     water.keyframe_insert(data_path="scale", frame=frame)
     water.keyframe_insert(data_path="location", frame=frame)
 
-# Adjust particle emission to stop when filling ends
+# Adjust particle emission timings
 if tank_filled_frame is not None:
-    psys.settings.frame_end = tank_filled_frame
+    psys_inlet.settings.frame_end = tank_filled_frame  # Inlet particles stop at fill end
+if draining_start_frame is not None:
+    psys_outlet.settings.frame_start = draining_start_frame  # Outlet particles start at drain begin
 
 # Linear keyframes
 if water.animation_data and water.animation_data.action:
@@ -188,4 +249,4 @@ scene = bpy.context.scene
 scene.frame_start = 1
 scene.frame_end = TOTAL_FRAMES
 scene.render.fps = FPS
-print(f"Outlet at bottom (0.1m) | Animation: {TOTAL_TIME}s | Fill:~15s | Drain:~300s | Particles flow from inlet during filling, stop when tank is full")
+print(f"Outlet at bottom (0.1m) | Animation: {TOTAL_TIME}s | Fill:~15s | Drain:~300s | Inlet particles during filling, outlet particles spill on floor during draining | Floor/tank/water have collision with high damping to prevent bouncing")
