@@ -30,6 +30,8 @@ TOPIC = "tank/rates"
 # Global variables for rates (EDIT THESE IF NOT USING MQTT)
 rate_in = 1.0  # <-- Change this value here if needed (e.g., to 2.0)
 rate_out = 1.0  # <-- Change this value here if needed (e.g., to 0.5)
+inlet_valve_percentage = 1.0  # <-- Inlet valve openness (0.0 to 1.0, 1.0 = 100% open)
+outlet_valve_percentage = 0.0  # <-- Outlet valve openness (0.0 to 1.0, 1.0 = 100% open)
 mqtt_connected = False
 
 
@@ -57,17 +59,17 @@ def get_rates_from_mqtt():
         client = mqtt.Client()
         client.username_pw_set(USERNAME, PASSWORD)
         client.on_message = on_message
-
+        
         print("Attempting to connect to MQTT broker...")
         client.connect(BROKER, PORT, 60)
         print("Connected to MQTT broker successfully!")
         client.subscribe(TOPIC)
         print("Subscribed to topic 'tank/rates'. Waiting for message... (timeout in 60s)")
-
+        
         start_time = time.time()
         while client.is_connected() and (time.time() - start_time) < 60:
             client.loop(timeout=0.1)
-
+        
         if client.is_connected():
             print("Timeout: No message received. Using default rates.")
             client.disconnect()
@@ -81,8 +83,12 @@ try:
 except Exception as e:
     print(f"MQTT setup error: {e}. Using default rates.")
 
+# Adjust rates based on valve percentages (prevent division by zero)
+effective_rate_in = rate_in * inlet_valve_percentage if inlet_valve_percentage > 0 else 0.001
+effective_rate_out = rate_out * outlet_valve_percentage if outlet_valve_percentage > 0 else 0.001
+
 # DEBUG: Print current rates before calculations
-print(f"DEBUG: Final rate_in = {rate_in}, rate_out = {rate_out}")
+print(f"DEBUG: Final rate_in = {rate_in}, effective_rate_in = {effective_rate_in}, rate_out = {rate_out}, effective_rate_out = {effective_rate_out}, inlet_valve = {inlet_valve_percentage}, outlet_valve = {outlet_valve_percentage}")
 
 # Now proceed with the rest of the script using the fetched rates
 
@@ -103,13 +109,13 @@ volume = math.pi * (tank_inner_radius ** 2) * tank_height
 print(f"DEBUG: Tank volume = {volume:.2f} units^3")
 
 # Time calculations (dynamic based on rates)
-t_fill = volume / rate_in
-t_drain = volume / rate_out
+t_fill = volume / effective_rate_in
+t_drain = volume / effective_rate_out
 total_time = t_fill + t_drain
 
 # Print the calculated times to console
-print(f"Time to fill the tank: {t_fill:.2f} seconds (at rate_in = {rate_in})")
-print(f"Time to drain the tank: {t_drain:.2f} seconds (at rate_out = {rate_out})")
+print(f"Time to fill the tank: {t_fill:.2f} seconds (at effective_rate_in = {effective_rate_in})")
+print(f"Time to drain the tank: {t_drain:.2f} seconds (at effective_rate_out = {effective_rate_out})")
 print(f"Total simulation time: {total_time:.2f} seconds")
 
 # Set frame rate and end frame
@@ -145,6 +151,16 @@ inlet.name = "Inlet_Pipe"
 inlet.rotation_euler[0] = math.radians(90)  # Rotate 90 degrees around X-axis to make horizontal
 inlet.data.materials.append(tank_mat)
 
+# Create valve on inlet pipe (small cylinder, rotated based on percentage)
+bpy.ops.mesh.primitive_cylinder_add(radius=0.1, depth=0.2, location=(0, tank_outer_radius + 0.5, tank_height - 0.5))
+valve_inlet = bpy.context.active_object
+valve_inlet.name = "Inlet_Valve"
+valve_inlet.rotation_euler[0] = math.radians(90)  # Horizontal
+valve_inlet.rotation_euler[2] = math.radians(inlet_valve_percentage * 90)  # Rotate Z-axis based on percentage (0 to 90 degrees)
+valve_mat = bpy.data.materials.new(name="Valve_Material")
+valve_mat.diffuse_color = (0.2, 0.2, 0.2, 1.0)  # Dark gray
+valve_inlet.data.materials.append(valve_mat)
+
 # Create a small plane for inlet particle emission (inner face)
 bpy.ops.mesh.primitive_plane_add(size=0.4, location=(0, tank_outer_radius - 0.5, tank_height - 0.5))  # At inner end of pipe
 inlet_emitter = bpy.context.active_object
@@ -161,6 +177,14 @@ outlet = bpy.context.active_object
 outlet.name = "Outlet_Pipe"
 outlet.rotation_euler[0] = math.radians(90)  # Rotate 90 degrees around X-axis to make horizontal
 outlet.data.materials.append(tank_mat)
+
+# Create valve on outlet pipe (small cylinder, rotated based on percentage)
+bpy.ops.mesh.primitive_cylinder_add(radius=0.1, depth=0.2, location=(0, -tank_outer_radius - outlet_radius - 0.5, 0.5))
+valve_outlet = bpy.context.active_object
+valve_outlet.name = "Outlet_Valve"
+valve_outlet.rotation_euler[0] = math.radians(90)  # Horizontal
+valve_outlet.rotation_euler[2] = math.radians(outlet_valve_percentage * 90)  # Rotate Z-axis based on percentage (0 to 90 degrees)
+valve_outlet.data.materials.append(valve_mat)
 
 # Create solid plane under the tank
 bpy.ops.mesh.primitive_plane_add(size=10.0, location=(0, 0, -0.1))  # Large plane below tank
@@ -214,7 +238,7 @@ ps_fill = inlet_emitter.particle_systems[0]
 ps_fill.name = "Water_Inflow"
 ps_settings = ps_fill.settings
 ps_settings.name = "Water_Inflow_Settings"
-ps_settings.count = 15000  # Increased count for denser emission
+ps_settings.count = int(15000 * inlet_valve_percentage) if inlet_valve_percentage > 0 else 0  # Adjust count based on valve percentage
 ps_settings.frame_start = 1
 ps_settings.frame_end = fill_frames
 ps_settings.lifetime = 300  # Very long lifetime
@@ -241,7 +265,7 @@ ps_drain = outlet.particle_systems[0]
 ps_drain.name = "Water_Outflow"
 ps_settings_drain = ps_drain.settings
 ps_settings_drain.name = "Water_Outflow_Settings"
-ps_settings_drain.count = 15000  # Higher count for denser flow
+ps_settings_drain.count = int(15000 * outlet_valve_percentage) if outlet_valve_percentage > 0 else 0  # Adjust count based on valve percentage
 ps_settings_drain.frame_start = drain_start_frame
 ps_settings_drain.frame_end = drain_end_frame
 ps_settings_drain.lifetime = 300  # Very long lifetime
@@ -261,7 +285,7 @@ print("DEBUG: Outlet particle system created (particles flowing from the end of 
 bpy.ops.object.text_add(location=(5, 0, tank_height + 1))
 text_obj = bpy.context.active_object
 text_obj.name = "Rates_Display"
-text_obj.data.body = f"Rate In: {rate_in}\nRate Out: {rate_out}\nFill Time: {t_fill:.2f}s\nDrain Time: {t_drain:.2f}s"
+text_obj.data.body = f"Rate In: {rate_in}\nEff Rate In: {effective_rate_in:.2f}\nRate Out: {rate_out}\nEff Rate Out: {effective_rate_out:.2f}\nInlet Valve: {inlet_valve_percentage*100:.0f}%\nOutlet Valve: {outlet_valve_percentage*100:.0f}%\nFill Time: {t_fill:.2f}s\nDrain Time: {t_drain:.2f}s"
 text_obj.data.size = 0.5
 text_obj.data.align_x = 'LEFT'
 
@@ -308,4 +332,5 @@ bpy.context.scene.camera = bpy.context.active_object
 
 bpy.ops.object.light_add(type='SUN', location=(5, 5, 10))
 
-print(f"Blender script executed. Tank model created with water animation using rate_in={rate_in}, rate_out={rate_out}.")
+#print(f"Blender script executed. Tank model created with water animation using rate_in={rate_in}, effective_rate_in={effective_rate_in}, rate_out={rate_out}, effective_rate_out={effective_rate_out}, inlet_valve={inlet_valve_percentage}, outlet_valve={outlet_valve_percentage}
+#nvfjn
